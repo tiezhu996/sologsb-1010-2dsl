@@ -1,8 +1,18 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
-import { analyzeProject, brailleCellCount, makeRule, outputText, updateRuleInSet } from './braille';
+import {
+  analyzeProject,
+  brailleCellCount,
+  clampCellsPerLine,
+  DEFAULT_CELLS_PER_LINE,
+  makeRule,
+  migrateProject,
+  outputText,
+  updateRuleInSet,
+  wrapTokens,
+} from './braille';
 import { createInitialProject } from './sample';
-import type { HistoryState, ProofIssue, ProjectState, TextbookLine, VersionSnapshot } from './types';
+import type { BrailleSegment, BrailleToken, HistoryState, ProofIssue, ProjectState, TextbookLine, VersionSnapshot } from './types';
 
 const STORAGE_KEY = 'sologsb-1010-braille-project-v1';
 const HISTORY_LIMIT = 60;
@@ -54,7 +64,7 @@ function loadInitialState(): ProjectState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as ProjectState;
+      const parsed = migrateProject(JSON.parse(raw) as ProjectState);
       return analyzeProject(parsed);
     }
   } catch {
@@ -113,6 +123,7 @@ function RuleSetPanel({
   onSelect,
   onUpdateRule,
   onToggleContractions,
+  onCellsPerLine,
   onAddRule,
   onRecheck,
 }: {
@@ -120,6 +131,7 @@ function RuleSetPanel({
   onSelect: (id: string) => void;
   onUpdateRule: (ruleId: string, patch: Record<string, unknown>) => void;
   onToggleContractions: () => void;
+  onCellsPerLine: (cells: number) => void;
   onAddRule: (source: string, output: string, suspicious: boolean) => void;
   onRecheck: () => void;
 }) {
@@ -128,7 +140,18 @@ function RuleSetPanel({
   const [newSource, setNewSource] = useState('');
   const [newOutput, setNewOutput] = useState('');
   const [suspicious, setSuspicious] = useState(true);
+  const [cellsDraft, setCellsDraft] = useState(String(active.cellsPerLine));
   const visibleRules = showAllRules ? active.rules : active.rules.filter((rule) => rule.kind === 'contraction' || rule.suspicious);
+
+  useEffect(() => {
+    setCellsDraft(String(active.cellsPerLine));
+  }, [active.id, active.cellsPerLine]);
+
+  const commitCells = () => {
+    const next = clampCellsPerLine(Number(cellsDraft));
+    setCellsDraft(String(next));
+    if (next !== active.cellsPerLine) onCellsPerLine(next);
+  };
 
   return (
     <aside class="left-panel scroll-pane" aria-label="规则集与规则编辑">
@@ -138,7 +161,7 @@ function RuleSetPanel({
             <button class={`rule-set-card ${ruleSet.id === active.id ? 'active' : ''}`} key={ruleSet.id} onClick={() => onSelect(ruleSet.id)}>
               <span>
                 <strong>{ruleSet.name}</strong>
-                <small>{ruleSet.rules.filter((rule) => rule.enabled).length} 条启用规则</small>
+                <small>{ruleSet.rules.filter((rule) => rule.enabled).length} 条启用规则 · 每行 {ruleSet.cellsPerLine} 格</small>
               </span>
               <span class="radio-dot" aria-hidden="true" />
             </button>
@@ -157,6 +180,22 @@ function RuleSetPanel({
             {showAllRules ? '只看常用规则' : '查看全部规则'}
           </md-filled-tonal-button>
         </div>
+        <label class="cells-control">
+          <span>每行格数（纸张）</span>
+          <input
+            type="number"
+            min={4}
+            max={120}
+            value={cellsDraft}
+            aria-label="每行格数"
+            onInput={(event: any) => setCellsDraft(event.currentTarget.value)}
+            onChange={commitCells}
+            onKeyDown={(event: KeyboardEvent) => {
+              if (event.key === 'Enter') (event.currentTarget as HTMLInputElement).blur();
+            }}
+          />
+          <small>默认 {DEFAULT_CELLS_PER_LINE} 格；改小后折行变化的已批准行会退回待核对。</small>
+        </label>
       </Section>
 
       <Section title="缩写与标点" subtitle="可疑规则会在校对区生成提醒">
@@ -210,10 +249,51 @@ function RuleSetPanel({
   );
 }
 
+function BrailleTokenChip({ token }: { token: BrailleToken }) {
+  return (
+    <span
+      class={`braille-token ${token.suspicious ? 'suspicious' : ''} ${token.braille.includes('⟦') ? 'error' : ''}`}
+      title={`${token.text || '标记'} → ${token.braille}`}
+    >
+      <b>{token.text || '标记'}</b>
+      <span>{token.braille}</span>
+    </span>
+  );
+}
+
+function WrappedPreview({ segments }: { segments: BrailleSegment[] }) {
+  if (segments.length === 1 && segments[0].tokens.length === 0) {
+    return <span class="empty-preview">空行</span>;
+  }
+  return (
+    <div class="wrapped-lines">
+      {segments.map((segment, segmentIndex) => (
+        <div class={`paper-line ${segment.continued ? 'continued' : ''} ${segment.overflow ? 'overflow' : ''}`} key={`seg-${segmentIndex}`}>
+          {segment.continued && (
+            <span class="continuation-mark" title="续行标记（占 1 格）">↳</span>
+          )}
+          {segment.tokens.map((token, tokenIndex) => (
+            token.text === ' '
+              ? <span class="space-token" key={`sp-${tokenIndex}`} title="分词空格" />
+              : <BrailleTokenChip key={token.id} token={token} />
+          ))}
+          <span class="line-cell-note">
+            {segment.overflow
+              ? `⚠ 超宽 ${segment.overflowUnits.map((unit) => `${unit.width}格`).join('、')}`
+              : `${segment.width}格`}
+            {segmentIndex < segments.length - 1 ? ' · 折行' : ''}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function LineCard({
   line,
   index,
   selected,
+  segments,
   issues,
   onSelect,
   onChange,
@@ -224,6 +304,7 @@ function LineCard({
   line: TextbookLine;
   index: number;
   selected: boolean;
+  segments: BrailleSegment[];
   issues: ProofIssue[];
   onSelect: () => void;
   onChange: (source: string) => void;
@@ -235,12 +316,15 @@ function LineCard({
   const lineIssues = unresolved.filter((issue) => issue.lineId === line.id);
 
   return (
-    <article class={`line-card ${selected ? 'selected' : ''}`} id={`line-card-${line.id}`} onClick={onSelect}>
+    <article class={`line-card ${selected ? 'selected' : ''} ${line.wrapPending ? 'wrap-pending' : ''}`} id={`line-card-${line.id}`} onClick={onSelect}>
       <div class="line-gutter">
         <span>{String(index + 1).padStart(2, '0')}</span>
         <span class={`line-status ${line.status}`} title={`状态：${line.status}`} />
       </div>
       <div class="line-body">
+        {line.wrapPending && (
+          <div class="repagination-banner">每行格数已调整，折行结果发生变化，请重新核对后批准。</div>
+        )}
         <div class="line-source">
           <textarea
             aria-label={`第 ${index + 1} 行原文`}
@@ -256,19 +340,8 @@ function LineCard({
             <md-icon-button aria-label="删除此行" title="删除此行" onClick={(event: MouseEvent) => { event.stopPropagation(); onDelete(); }}>×</md-icon-button>
           </div>
         </div>
-        <div class="braille-preview" aria-label={`第 ${index + 1} 行盲文预览`}>
-          {line.tokens.length === 0 && <span class="empty-preview">空行</span>}
-          {line.tokens.map((token) => (
-            token.text === ' ' ? <span class="space-token" title="分词空格" /> : (
-              <span
-                class={`braille-token ${token.suspicious ? 'suspicious' : ''} ${token.braille.includes('⟦') ? 'error' : ''}`}
-                title={`${token.text || '标记'} → ${token.braille}`}
-              >
-                <b>{token.text || '标记'}</b>
-                <span>{token.braille}</span>
-              </span>
-            )
-          ))}
+        <div class="braille-preview" aria-label={`第 ${index + 1} 行盲文预览（按每行格数折行）`}>
+          <WrappedPreview segments={segments} />
         </div>
         {lineIssues.length > 0 && (
           <div class="line-warnings">
@@ -292,6 +365,7 @@ function LineCard({
 
 function EditorPanel({
   state,
+  cellsPerLine,
   onSelectLine,
   onChangeLine,
   onNote,
@@ -302,6 +376,7 @@ function EditorPanel({
   onImport,
 }: {
   state: ProjectState;
+  cellsPerLine: number;
   onSelectLine: (id: string) => void;
   onChangeLine: (id: string, source: string) => void;
   onNote: (id: string, note: string) => void;
@@ -320,7 +395,7 @@ function EditorPanel({
         <div>
           <span class="eyebrow">逐行校对</span>
           <h1>{state.title}</h1>
-          <p>{state.author} · {state.lines.length} 行 · {brailleCellCount(state)} 格</p>
+          <p>{state.author} · {state.lines.length} 行 · {brailleCellCount(state)} 格 · 每行 {cellsPerLine} 格折行</p>
         </div>
         <div class="toolbar-actions">
           <md-outlined-button onClick={() => setShowImport((value) => !value)}>导入课文</md-outlined-button>
@@ -361,6 +436,7 @@ function EditorPanel({
             line={line}
             index={index}
             selected={state.selectedLineId === line.id}
+            segments={wrapTokens(line.tokens, cellsPerLine)}
             issues={state.issues}
             onSelect={() => onSelectLine(line.id)}
             onChange={(source) => onChangeLine(line.id, source)}
@@ -488,7 +564,19 @@ export default function App() {
   const activeRuleSet = state.ruleSets.find((ruleSet) => ruleSet.id === state.activeRuleSetId) ?? state.ruleSets[0];
   const unresolvedCount = state.issues.filter((issue) => !issue.resolved).length;
   const approvedCount = state.lines.filter((line) => line.status === 'approved').length;
+  const wrapPendingCount = state.lines.filter((line) => line.wrapPending).length;
   const progress = state.lines.length ? Math.round((approvedCount / state.lines.length) * 100) : 0;
+
+  const changeCellsPerLine = (cells: number) => {
+    const nextCells = clampCellsPerLine(cells);
+    if (nextCells === activeRuleSet.cellsPerLine) return;
+    commit('调整每行格数并重新折行', (current) => {
+      const ruleSets = current.ruleSets.map((set) => set.id === current.activeRuleSetId
+        ? { ...set, cellsPerLine: nextCells }
+        : set);
+      return analyzeProject({ ...current, ruleSets }, true);
+    });
+  };
 
   const selectLine = (lineId: string, scroll = false) => {
     commit('切换当前行', (current) => ({ ...current, selectedLineId: lineId }));
@@ -501,7 +589,9 @@ export default function App() {
 
   const changeStatus = (lineId: string, status: TextbookLine['status']) => {
     commit('更新校对状态', (current) => {
-      const lines = current.lines.map((line) => line.id === lineId ? { ...line, status } : line);
+      const lines = current.lines.map((line) => line.id === lineId
+        ? { ...line, status, wrapPending: false }
+        : line);
       const issues = current.issues.map((item) => item.lineId === lineId && status === 'approved' ? { ...item, resolved: true } : item);
       return { ...current, lines, issues, updatedAt: new Date().toISOString() };
     });
@@ -564,7 +654,7 @@ export default function App() {
   };
 
   const exportText = () => {
-    const blob = new Blob([`${state.title}\n规则集：${activeRuleSet.name}\n\n${outputText(state)}\n`], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob([`${state.title}\n规则集：${activeRuleSet.name} · 每行 ${activeRuleSet.cellsPerLine} 格\n\n${outputText(state)}\n`], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -573,13 +663,22 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  const escapeHtml = (value: string) => value.replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char] ?? char));
+
   const exportPrint = () => {
     const printWindow = window.open('', '_blank', 'width=900,height=1100');
     if (!printWindow) return;
-    const rows = state.lines.map((line, index) => `
-      <tr><td>${index + 1}</td><td>${line.source.replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char] ?? char))}</td><td class="braille">${line.tokens.map((token) => token.braille).join('')}</td></tr>
-    `).join('');
-    printWindow.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${state.title}</title><style>body{font-family:Georgia,serif;color:#111;margin:36px}h1{font-size:22px}table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #bbb;text-align:left;vertical-align:top}td:first-child{width:36px;color:#666}.braille{font-family:"Apple Braille",sans-serif;font-size:24px}@media print{body{margin:16mm}}</style></head><body><h1>${state.title}</h1><p>${state.author} · ${activeRuleSet.name} · ${new Date().toLocaleDateString('zh-CN')}</p><table><thead><tr><th>#</th><th>原文</th><th>盲文校对稿</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>setTimeout(()=>window.print(),150)</script></body></html>`);
+    const rows = state.lines.map((line, index) => {
+      const segments = wrapTokens(line.tokens, activeRuleSet.cellsPerLine);
+      const braille = segments.map((segment) => {
+        const notice = segment.overflow
+          ? `<span class="overflow-note">⚠ 超宽单元 ${segment.overflowUnits.map((unit) => `${unit.width}格`).join('、')}，超过每行 ${activeRuleSet.cellsPerLine} 格，已单独成行</span>`
+          : '';
+        return `<div class="braille-row ${segment.continued ? 'continued' : ''} ${segment.overflow ? 'overflow' : ''}">${segment.continued ? '<span class="cont-mark">↳</span>' : ''}<span class="braille-cells">${escapeHtml(segment.tokens.map((token) => token.braille).join(''))}</span>${notice}</div>`;
+      }).join('');
+      return `<tr><td>${index + 1}</td><td>${escapeHtml(line.source)}</td><td class="braille">${braille}</td></tr>`;
+    }).join('');
+    printWindow.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(state.title)}</title><style>body{font-family:Georgia,serif;color:#111;margin:36px}h1{font-size:22px}table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #bbb;text-align:left;vertical-align:top}td:first-child{width:36px;color:#666}.braille{font-family:"Apple Braille",sans-serif;font-size:24px}.braille-row{display:flex;align-items:baseline;gap:6px;min-height:30px;white-space:pre-wrap;word-break:break-all}.braille-row.continued{padding-left:26px;text-indent:-26px}.cont-mark{color:#a15c00;font-weight:bold}.overflow{background:#fff0e8}.overflow-note{font-family:Georgia,serif;font-size:11px;color:#b3261e;white-space:normal}@media print{body{margin:16mm}}</style></head><body><h1>${escapeHtml(state.title)}</h1><p>${escapeHtml(state.author)} · ${escapeHtml(activeRuleSet.name)} · 每行 ${activeRuleSet.cellsPerLine} 格 · ${new Date().toLocaleDateString('zh-CN')}</p><table><thead><tr><th>#</th><th>原文</th><th>盲文校对稿（按格折行）</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>setTimeout(()=>window.print(),150)</script></body></html>`);
     printWindow.document.close();
   };
 
@@ -607,7 +706,7 @@ export default function App() {
       .filter(Boolean);
     commit('导入课文', (current) => analyzeProject({
       ...current,
-      lines: sourceLines.map((source, index) => ({ id: `line-import-${Date.now()}-${index}`, source, tokens: [], status: index === 0 ? 'questionable' : 'unchecked', note: index === 0 ? '导入后待确认规则集。' : '', continuesPrevious: false, continuesNext: false })),
+      lines: sourceLines.map((source, index) => ({ id: `line-import-${Date.now()}-${index}`, source, tokens: [], status: index === 0 ? 'questionable' : 'unchecked', note: index === 0 ? '导入后待确认规则集。' : '', continuesPrevious: false, continuesNext: false, wrapSignature: '', wrapPending: false })),
       selectedLineId: '',
       issues: [],
     }));
@@ -640,8 +739,18 @@ export default function App() {
         </div>
         <div class="status-stat warning"><strong>{unresolvedCount}</strong><span>未处理问题</span></div>
         <div class="status-stat"><strong>{state.lines.filter((line) => line.status === 'questionable').length}</strong><span>待核对行</span></div>
-        <div class="status-stat"><strong>{activeRuleSet.rules.filter((rule) => rule.enabled).length}</strong><span>启用规则</span></div>
-        <div class="shortcut-hint">快捷键：⌘/Ctrl Z 撤销 · ⇧⌘/Ctrl Z 重做 · ⌘/Ctrl Enter 批准并下一行 · J/K 切换行</div>
+        <div class={`status-stat ${wrapPendingCount > 0 ? 'warning' : ''}`}><strong>{wrapPendingCount}</strong><span>折行待重新确认</span></div>
+        <div class="shortcut-hint">
+          {wrapPendingCount > 0 && (
+            <button class="repagination-hint" onClick={() => {
+              const first = state.lines.find((line) => line.wrapPending);
+              if (first) selectLine(first.id, true);
+            }}>
+              每行格数已调整：还剩 {wrapPendingCount} 行折行变化、等待重新确认（点击定位）
+            </button>
+          )}
+          {wrapPendingCount === 0 && <>快捷键：⌘/Ctrl Z 撤销 · ⇧⌘/Ctrl Z 重做 · ⌘/Ctrl Enter 批准并下一行 · J/K 切换行</>}
+        </div>
       </div>
 
       <div class="workspace-grid">
@@ -653,6 +762,7 @@ export default function App() {
             const ruleSet = activeRuleSet;
             commit('切换缩写规则', (current) => analyzeProject({ ...current, ruleSets: current.ruleSets.map((set) => set.id === ruleSet.id ? { ...set, contractions: !set.contractions } : set) }));
           }}
+          onCellsPerLine={changeCellsPerLine}
           onAddRule={(source, output, suspicious) => {
             commit('新增转写规则', (current) => analyzeProject({
               ...current,
@@ -664,23 +774,24 @@ export default function App() {
 
         <EditorPanel
           state={state}
+          cellsPerLine={activeRuleSet.cellsPerLine}
           onSelectLine={selectLine}
           onChangeLine={changeLine}
           onNote={(lineId, note) => commit('添加校对备注', (current) => ({ ...current, lines: current.lines.map((line) => line.id === lineId ? { ...line, note } : line) }))}
           onStatus={changeStatus}
           onDelete={(lineId) => commit('删除课文行', (current) => {
             const lines = current.lines.filter((line) => line.id !== lineId);
-            return analyzeProject({ ...current, lines: lines.length ? lines : [{ id: `line-${Date.now()}`, source: '', tokens: [], status: 'unchecked', note: '', continuesPrevious: false, continuesNext: false }], selectedLineId: lines[0]?.id ?? '' });
+            return analyzeProject({ ...current, lines: lines.length ? lines : [{ id: `line-${Date.now()}`, source: '', tokens: [], status: 'unchecked', note: '', continuesPrevious: false, continuesNext: false, wrapSignature: '', wrapPending: false }], selectedLineId: lines[0]?.id ?? '' });
           })}
           onAddLine={() => commit('新增课文行', (current) => {
-            const line: TextbookLine = { id: `line-${Date.now()}`, source: '', tokens: [], status: 'unchecked', note: '', continuesPrevious: false, continuesNext: false };
+            const line: TextbookLine = { id: `line-${Date.now()}`, source: '', tokens: [], status: 'unchecked', note: '', continuesPrevious: false, continuesNext: false, wrapSignature: '', wrapPending: false };
             return analyzeProject({ ...current, lines: [...current.lines, line], selectedLineId: line.id });
           })}
           onSplitLongLines={() => commit('按句拆分长行', (current) => {
             const lines = current.lines.flatMap((line) => line.source
               .split(/(?<=[.!?。！？])\s+|;\s*/)
               .filter((part) => part.trim())
-              .map((source, index) => ({ ...line, id: index === 0 ? line.id : `line-split-${Date.now()}-${index}`, source: source.trim(), tokens: [], note: index === 0 ? line.note : '' })));
+              .map((source, index) => ({ ...line, id: index === 0 ? line.id : `line-split-${Date.now()}-${index}`, source: source.trim(), tokens: [], note: index === 0 ? line.note : '', wrapSignature: '', wrapPending: false })));
             return analyzeProject({ ...current, lines });
           })}
           onImport={importCourse}
@@ -708,7 +819,7 @@ export default function App() {
             }));
           }} />}
           {inspectorTab === 'versions' && <VersionsPanel state={state} onSnapshot={() => recordVersion()} onRestore={(version) => {
-            const restored: ProjectState = cloneState({ ...version.snapshot, versions: state.versions });
+            const restored: ProjectState = migrateProject(cloneState({ ...version.snapshot, versions: state.versions }));
             restore(restored);
           }} />}
         </aside>

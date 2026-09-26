@@ -107,6 +107,14 @@ md-linear-progress { width: 100%; --md-linear-progress-active-indicator-color: #
 .rule-set-card.active .radio-dot { border: 4px solid #39715f; }
 
 .inline-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cells-control { display: block; margin-top: 12px; padding: 10px; border: 1px solid #cfe0d9; border-radius: 9px; background: #f1f7f4; }
+.cells-control > span { display: block; font-size: 12px; font-weight: 600; color: #2c4a41; }
+.cells-control input {
+  width: 100%; margin: 6px 0 4px; padding: 7px 9px; border: 1px solid #b5c9c1; border-radius: 7px;
+  background: white; color: #1e2b27; font-size: 15px;
+}
+.cells-control input:focus { outline: 2px solid rgba(61, 122, 102, .35); border-color: #4c806f; }
+.cells-control small { display: block; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .rule-list { display: flex; flex-direction: column; gap: 7px; }
 .rule-row {
   display: grid; grid-template-columns: 22px minmax(70px, .8fr) minmax(92px, 1fr) 30px;
@@ -149,9 +157,23 @@ md-linear-progress { width: 100%; --md-linear-progress-active-indicator-color: #
 .line-actions { display: grid; grid-template-columns: repeat(4, 30px); opacity: .35; transition: opacity .15s; }
 .line-card:hover .line-actions, .line-card.selected .line-actions { opacity: 1; }
 .braille-preview {
-  min-height: 54px; padding: 8px 5px 3px; display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+  min-height: 54px; padding: 8px 5px 3px;
   border-bottom: 1px solid #e0e5e3;
 }
+.wrapped-lines { display: flex; flex-direction: column; gap: 2px; }
+.paper-line {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+  padding: 4px 6px; border-bottom: 1px dashed #d7e0dc;
+}
+.paper-line:last-child { border-bottom: 0; }
+.paper-line.continued { background: #f4f9f6; }
+.paper-line.overflow { background: #fdf1ec; box-shadow: inset 3px 0 #c6612c; }
+.continuation-mark {
+  display: inline-grid; place-items: center; min-width: 22px; height: 28px;
+  border-radius: 5px; background: #ffe9c7; color: #8a5200; font-weight: 700; font-size: 15px;
+}
+.line-cell-note { margin-left: auto; color: #93a09b; font-size: 10px; white-space: nowrap; }
+.paper-line.overflow .line-cell-note { color: #b3261e; font-weight: 600; }
 .braille-token { display: inline-flex; flex-direction: column; align-items: center; min-width: 25px; padding: 3px 4px 4px; border-radius: 6px; background: #f1f5f3; }
 .braille-token b { color: #77837f; font: 500 9px/1.2 sans-serif; }
 .braille-token span { margin-top: 3px; font: 22px/1.05 "Apple Braille", "Segoe UI Symbol", sans-serif; }
@@ -159,6 +181,15 @@ md-linear-progress { width: 100%; --md-linear-progress-active-indicator-color: #
 .braille-token.error { background: #ffebe9; color: var(--danger); }
 .space-token { width: 10px; height: 28px; border-bottom: 1px dotted #b7c2be; }
 .empty-preview { color: #98a39f; font-size: 12px; }
+.line-card.wrap-pending { border-color: #d9a44f; box-shadow: inset 4px 0 #e3a844; }
+.repagination-banner {
+  margin: 0 0 8px; padding: 5px 9px; border-radius: 6px;
+  background: #fff4dd; color: #7c4d00; font-size: 11px;
+}
+.repagination-hint {
+  border: 0; background: transparent; cursor: pointer; padding: 0;
+  color: #8a5200; font-size: 11px; text-decoration: underline;
+}
 .line-warnings { padding-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
 .issue-chip { display: inline-block; max-width: 100%; padding: 4px 7px; border-radius: 5px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .issue-chip.warning { color: #7a4700; background: #fff0d6; }
