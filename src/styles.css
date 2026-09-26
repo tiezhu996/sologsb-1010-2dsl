@@ -31,7 +31,7 @@ button { color: inherit; }
 md-outlined-text-field { width: 100%; }
 md-text-button, md-filled-button, md-outlined-button, md-filled-tonal-button { white-space: nowrap; }
 
-.app-shell { min-height: 100vh; background: #e7eeeb; }
+.app-shell { height: 100vh; display: flex; flex-direction: column; background: #e7eeeb; }
 .topbar {
   height: 72px;
   padding: 0 22px;
@@ -84,7 +84,13 @@ md-linear-progress { width: 100%; --md-linear-progress-active-indicator-color: #
 .status-stat.warning strong { color: var(--warning); }
 .shortcut-hint { color: #586863; font-size: 11px; line-height: 1.5; text-align: right; }
 
-.workspace-grid { height: calc(100vh - 134px); display: grid; grid-template-columns: 310px minmax(560px, 1fr) 370px; overflow: hidden; }
+.reconfirm-banner {
+  padding: 8px 22px; background: #fff4d6; border-bottom: 1px solid #ecd9a8;
+  color: #6d4a00; font-size: 12px;
+}
+.reconfirm-banner strong { font-size: 14px; }
+
+.workspace-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 310px minmax(560px, 1fr) 370px; overflow: hidden; }
 .left-panel, .right-panel { background: #f7faf8; }
 .left-panel { border-right: 1px solid var(--line); }
 .right-panel { border-left: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
@@ -107,6 +113,13 @@ md-linear-progress { width: 100%; --md-linear-progress-active-indicator-color: #
 .rule-set-card.active .radio-dot { border: 4px solid #39715f; }
 
 .inline-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cells-control { margin-top: 12px; display: grid; grid-template-columns: 1fr 86px; align-items: center; gap: 4px 10px; font-size: 12px; }
+.cells-control input {
+  width: 86px; padding: 7px 8px; border: 1px solid var(--md-sys-color-outline); border-radius: 8px;
+  background: white; font-size: 13px; text-align: center;
+}
+.cells-control input:focus { outline: 2px solid #39715f; outline-offset: 1px; }
+.cells-control small { grid-column: 1 / -1; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .rule-list { display: flex; flex-direction: column; gap: 7px; }
 .rule-row {
   display: grid; grid-template-columns: 22px minmax(70px, .8fr) minmax(92px, 1fr) 30px;
@@ -149,9 +162,15 @@ md-linear-progress { width: 100%; --md-linear-progress-active-indicator-color: #
 .line-actions { display: grid; grid-template-columns: repeat(4, 30px); opacity: .35; transition: opacity .15s; }
 .line-card:hover .line-actions, .line-card.selected .line-actions { opacity: 1; }
 .braille-preview {
-  min-height: 54px; padding: 8px 5px 3px; display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+  min-height: 54px; padding: 8px 5px 3px; display: flex; flex-direction: column; gap: 6px;
   border-bottom: 1px solid #e0e5e3;
 }
+.braille-row { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 3px 6px; border-radius: 8px; }
+.braille-row.continued { background: #f2f7f4; }
+.braille-row.overflow { background: #fff3e2; box-shadow: inset 0 0 0 1px #ecc57f; }
+.continuation-mark { min-width: 16px; color: #7a5a18; font-size: 15px; font-weight: 700; text-align: center; }
+.overflow-note { padding: 3px 6px; border-radius: 4px; background: #ffe9c4; color: #8a5a00; font-size: 10px; }
+.row-meta { padding-top: 6px; color: var(--muted); font-size: 10px; }
 .braille-token { display: inline-flex; flex-direction: column; align-items: center; min-width: 25px; padding: 3px 4px 4px; border-radius: 6px; background: #f1f5f3; }
 .braille-token b { color: #77837f; font: 500 9px/1.2 sans-serif; }
 .braille-token span { margin-top: 3px; font: 22px/1.05 "Apple Braille", "Segoe UI Symbol", sans-serif; }
@@ -209,7 +228,9 @@ md-linear-progress { width: 100%; --md-linear-progress-active-indicator-color: #
 
 @media print {
   body { min-width: 0; overflow: visible; }
-  .topbar, .status-ribbon, .left-panel, .right-panel, .editor-toolbar, .line-actions, .note-field { display: none !important; }
+  .app-shell { height: auto; display: block; }
+  .topbar, .status-ribbon, .reconfirm-banner, .left-panel, .right-panel, .editor-toolbar, .line-actions, .note-field { display: none !important; }
   .workspace-grid, .editor-panel, .line-list { display: block; height: auto; overflow: visible; background: white; padding: 0; }
   .line-card { break-inside: avoid; box-shadow: none; }
+  .braille-row { break-inside: avoid; }
 }

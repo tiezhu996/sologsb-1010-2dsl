@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
-import { analyzeProject, brailleCellCount, makeRule, outputText, updateRuleInSet } from './braille';
+import { analyzeProject, brailleCellCount, CONTINUATION_MARK, makeRule, outputText, rowBraille, updateRuleInSet } from './braille';
 import { createInitialProject } from './sample';
 import type { HistoryState, ProofIssue, ProjectState, TextbookLine, VersionSnapshot } from './types';
 
@@ -113,6 +113,7 @@ function RuleSetPanel({
   onSelect,
   onUpdateRule,
   onToggleContractions,
+  onCellsChange,
   onAddRule,
   onRecheck,
 }: {
@@ -120,6 +121,7 @@ function RuleSetPanel({
   onSelect: (id: string) => void;
   onUpdateRule: (ruleId: string, patch: Record<string, unknown>) => void;
   onToggleContractions: () => void;
+  onCellsChange: (cells: number) => void;
   onAddRule: (source: string, output: string, suspicious: boolean) => void;
   onRecheck: () => void;
 }) {
@@ -128,7 +130,20 @@ function RuleSetPanel({
   const [newSource, setNewSource] = useState('');
   const [newOutput, setNewOutput] = useState('');
   const [suspicious, setSuspicious] = useState(true);
+  const [cellsInput, setCellsInput] = useState(String(active.cellsPerLine));
+  useEffect(() => setCellsInput(String(active.cellsPerLine)), [active.id, active.cellsPerLine]);
   const visibleRules = showAllRules ? active.rules : active.rules.filter((rule) => rule.kind === 'contraction' || rule.suspicious);
+
+  const commitCells = () => {
+    const parsed = Math.round(Number(cellsInput));
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      setCellsInput(String(active.cellsPerLine));
+      return;
+    }
+    const cells = Math.min(80, parsed);
+    if (cells !== active.cellsPerLine) onCellsChange(cells);
+    else setCellsInput(String(cells));
+  };
 
   return (
     <aside class="left-panel scroll-pane" aria-label="规则集与规则编辑">
@@ -138,7 +153,7 @@ function RuleSetPanel({
             <button class={`rule-set-card ${ruleSet.id === active.id ? 'active' : ''}`} key={ruleSet.id} onClick={() => onSelect(ruleSet.id)}>
               <span>
                 <strong>{ruleSet.name}</strong>
-                <small>{ruleSet.rules.filter((rule) => rule.enabled).length} 条启用规则</small>
+                <small>{ruleSet.rules.filter((rule) => rule.enabled).length} 条启用规则 · 每行 {ruleSet.cellsPerLine} 格</small>
               </span>
               <span class="radio-dot" aria-hidden="true" />
             </button>
@@ -157,6 +172,19 @@ function RuleSetPanel({
             {showAllRules ? '只看常用规则' : '查看全部规则'}
           </md-filled-tonal-button>
         </div>
+        <label class="cells-control">
+          <span>盲文纸每行格数</span>
+          <input
+            type="number"
+            min={1}
+            max={80}
+            value={cellsInput}
+            aria-label="盲文纸每行格数"
+            onInput={(event: Event) => setCellsInput((event.currentTarget as HTMLInputElement).value)}
+            onChange={commitCells}
+          />
+          <small>默认 32 格；超出按盲文单元折行，第二段起带续行标记</small>
+        </label>
       </Section>
 
       <Section title="缩写与标点" subtitle="可疑规则会在校对区生成提醒">
@@ -214,6 +242,7 @@ function LineCard({
   line,
   index,
   selected,
+  cellsPerLine,
   issues,
   onSelect,
   onChange,
@@ -224,6 +253,7 @@ function LineCard({
   line: TextbookLine;
   index: number;
   selected: boolean;
+  cellsPerLine: number;
   issues: ProofIssue[];
   onSelect: () => void;
   onChange: (source: string) => void;
@@ -233,6 +263,7 @@ function LineCard({
 }) {
   const unresolved = issues.filter((issue) => !issue.resolved);
   const lineIssues = unresolved.filter((issue) => issue.lineId === line.id);
+  const totalCells = line.rows.reduce((count, row) => count + row.cells, 0);
 
   return (
     <article class={`line-card ${selected ? 'selected' : ''}`} id={`line-card-${line.id}`} onClick={onSelect}>
@@ -256,20 +287,31 @@ function LineCard({
             <md-icon-button aria-label="删除此行" title="删除此行" onClick={(event: MouseEvent) => { event.stopPropagation(); onDelete(); }}>×</md-icon-button>
           </div>
         </div>
-        <div class="braille-preview" aria-label={`第 ${index + 1} 行盲文预览`}>
-          {line.tokens.length === 0 && <span class="empty-preview">空行</span>}
-          {line.tokens.map((token) => (
-            token.text === ' ' ? <span class="space-token" title="分词空格" /> : (
-              <span
-                class={`braille-token ${token.suspicious ? 'suspicious' : ''} ${token.braille.includes('⟦') ? 'error' : ''}`}
-                title={`${token.text || '标记'} → ${token.braille}`}
-              >
-                <b>{token.text || '标记'}</b>
-                <span>{token.braille}</span>
-              </span>
-            )
+        <div class="braille-preview" aria-label={`第 ${index + 1} 行盲文预览，按每行 ${cellsPerLine} 格折行`}>
+          {line.rows.length === 0 && <span class="empty-preview">空行</span>}
+          {line.rows.map((row) => (
+            <div class={`braille-row ${row.continued ? 'continued' : ''} ${row.overflow ? 'overflow' : ''}`}>
+              {row.continued && <span class="continuation-mark" title="续行标记">{CONTINUATION_MARK}</span>}
+              {row.tokens.map((token) => (
+                token.text === ' '
+                  ? <span class="space-token" title="分词空格" />
+                  : (
+                    <span
+                      class={`braille-token ${token.suspicious ? 'suspicious' : ''} ${token.braille.includes('⟦') ? 'error' : ''}`}
+                      title={`${token.text || '标记'} → ${token.braille}`}
+                    >
+                      <b>{token.text || '标记'}</b>
+                      <span>{token.braille}</span>
+                    </span>
+                  )
+              ))}
+              {row.overflow && <span class="overflow-note">超宽单元 {row.cells} 格，超出每行 {cellsPerLine} 格，单独占一行</span>}
+            </div>
           ))}
         </div>
+        {line.rows.length > 1 && (
+          <div class="row-meta">折为 {line.rows.length} 行 · {totalCells} 格 / 每行 {cellsPerLine} 格</div>
+        )}
         {lineIssues.length > 0 && (
           <div class="line-warnings">
             {lineIssues.slice(0, 3).map((item) => (
@@ -313,6 +355,7 @@ function EditorPanel({
 }) {
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState('');
+  const activeRuleSet = state.ruleSets.find((ruleSet) => ruleSet.id === state.activeRuleSetId) ?? state.ruleSets[0];
 
   return (
     <main class="editor-panel" aria-label="逐行转录校对区">
@@ -361,6 +404,7 @@ function EditorPanel({
             line={line}
             index={index}
             selected={state.selectedLineId === line.id}
+            cellsPerLine={activeRuleSet.cellsPerLine}
             issues={state.issues}
             onSelect={() => onSelectLine(line.id)}
             onChange={(source) => onChangeLine(line.id, source)}
@@ -488,6 +532,7 @@ export default function App() {
   const activeRuleSet = state.ruleSets.find((ruleSet) => ruleSet.id === state.activeRuleSetId) ?? state.ruleSets[0];
   const unresolvedCount = state.issues.filter((issue) => !issue.resolved).length;
   const approvedCount = state.lines.filter((line) => line.status === 'approved').length;
+  const reconfirmCount = state.lines.filter((line) => line.reconfirm).length;
   const progress = state.lines.length ? Math.round((approvedCount / state.lines.length) * 100) : 0;
 
   const selectLine = (lineId: string, scroll = false) => {
@@ -501,8 +546,12 @@ export default function App() {
 
   const changeStatus = (lineId: string, status: TextbookLine['status']) => {
     commit('更新校对状态', (current) => {
-      const lines = current.lines.map((line) => line.id === lineId ? { ...line, status } : line);
-      const issues = current.issues.map((item) => item.lineId === lineId && status === 'approved' ? { ...item, resolved: true } : item);
+      const lines = current.lines.map((line) => line.id === lineId ? { ...line, status, reconfirm: false } : line);
+      const issues = current.issues.map((item) => {
+        if (item.lineId !== lineId) return item;
+        if (status === 'approved' || item.code === 'wrap-changed') return { ...item, resolved: true };
+        return item;
+      });
       return { ...current, lines, issues, updatedAt: new Date().toISOString() };
     });
   };
@@ -564,7 +613,8 @@ export default function App() {
   };
 
   const exportText = () => {
-    const blob = new Blob([`${state.title}\n规则集：${activeRuleSet.name}\n\n${outputText(state)}\n`], { type: 'text/plain;charset=utf-8' });
+    const header = `${state.title}\n规则集：${activeRuleSet.name} · 每行 ${activeRuleSet.cellsPerLine} 格`;
+    const blob = new Blob([`${header}\n\n${outputText(state)}\n`], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -576,10 +626,14 @@ export default function App() {
   const exportPrint = () => {
     const printWindow = window.open('', '_blank', 'width=900,height=1100');
     if (!printWindow) return;
-    const rows = state.lines.map((line, index) => `
-      <tr><td>${index + 1}</td><td>${line.source.replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char] ?? char))}</td><td class="braille">${line.tokens.map((token) => token.braille).join('')}</td></tr>
-    `).join('');
-    printWindow.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${state.title}</title><style>body{font-family:Georgia,serif;color:#111;margin:36px}h1{font-size:22px}table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #bbb;text-align:left;vertical-align:top}td:first-child{width:36px;color:#666}.braille{font-family:"Apple Braille",sans-serif;font-size:24px}@media print{body{margin:16mm}}</style></head><body><h1>${state.title}</h1><p>${state.author} · ${activeRuleSet.name} · ${new Date().toLocaleDateString('zh-CN')}</p><table><thead><tr><th>#</th><th>原文</th><th>盲文校对稿</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>setTimeout(()=>window.print(),150)</script></body></html>`);
+    const escapeHtml = (text: string) => text.replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char] ?? char));
+    const rows = state.lines.map((line, index) => {
+      const brailleRows = line.rows.length === 0
+        ? '<div class="braille-row empty">（空行）</div>'
+        : line.rows.map((row) => `<div class="braille-row${row.continued ? ' continued' : ''}${row.overflow ? ' overflow' : ''}">${escapeHtml(rowBraille(row))}</div>`).join('');
+      return `<tr><td>${index + 1}</td><td>${escapeHtml(line.source)}</td><td class="braille">${brailleRows}</td></tr>`;
+    }).join('');
+    printWindow.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${state.title}</title><style>body{font-family:Georgia,serif;color:#111;margin:36px}h1{font-size:22px}table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #bbb;text-align:left;vertical-align:top}td:first-child{width:36px;color:#666}.braille{font-family:"Apple Braille",sans-serif;font-size:24px}.braille-row{min-height:30px}.braille-row.continued{color:#333}.braille-row.overflow{background:#fff3e0}.braille-row.empty{color:#999;font-size:14px}@media print{body{margin:16mm}}</style></head><body><h1>${state.title}</h1><p>${state.author} · ${activeRuleSet.name} · 每行 ${activeRuleSet.cellsPerLine} 格 · ${new Date().toLocaleDateString('zh-CN')}</p><table><thead><tr><th>#</th><th>原文</th><th>盲文校对稿</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>setTimeout(()=>window.print(),150)</script></body></html>`);
     printWindow.document.close();
   };
 
@@ -607,9 +661,16 @@ export default function App() {
       .filter(Boolean);
     commit('导入课文', (current) => analyzeProject({
       ...current,
-      lines: sourceLines.map((source, index) => ({ id: `line-import-${Date.now()}-${index}`, source, tokens: [], status: index === 0 ? 'questionable' : 'unchecked', note: index === 0 ? '导入后待确认规则集。' : '', continuesPrevious: false, continuesNext: false })),
+      lines: sourceLines.map((source, index) => ({ id: `line-import-${Date.now()}-${index}`, source, tokens: [], rows: [], status: index === 0 ? 'questionable' : 'unchecked', note: index === 0 ? '导入后待确认规则集。' : '', continuesPrevious: false, continuesNext: false })),
       selectedLineId: '',
       issues: [],
+    }));
+  };
+
+  const changeCellsPerLine = (cells: number) => {
+    commit('调整每行格数', (current) => analyzeProject({
+      ...current,
+      ruleSets: current.ruleSets.map((set) => set.id === current.activeRuleSetId ? { ...set, cellsPerLine: cells } : set),
     }));
   };
 
@@ -644,6 +705,12 @@ export default function App() {
         <div class="shortcut-hint">快捷键：⌘/Ctrl Z 撤销 · ⇧⌘/Ctrl Z 重做 · ⌘/Ctrl Enter 批准并下一行 · J/K 切换行</div>
       </div>
 
+      {reconfirmCount > 0 && (
+        <div class="reconfirm-banner" role="status">
+          ⚠ 每行格数或折行结果已变化，还有 <strong>{reconfirmCount}</strong> 行折行结果未重新确认，原批准已退回待核对。
+        </div>
+      )}
+
       <div class="workspace-grid">
         <RuleSetPanel
           state={state}
@@ -653,6 +720,7 @@ export default function App() {
             const ruleSet = activeRuleSet;
             commit('切换缩写规则', (current) => analyzeProject({ ...current, ruleSets: current.ruleSets.map((set) => set.id === ruleSet.id ? { ...set, contractions: !set.contractions } : set) }));
           }}
+          onCellsChange={changeCellsPerLine}
           onAddRule={(source, output, suspicious) => {
             commit('新增转写规则', (current) => analyzeProject({
               ...current,
@@ -670,10 +738,10 @@ export default function App() {
           onStatus={changeStatus}
           onDelete={(lineId) => commit('删除课文行', (current) => {
             const lines = current.lines.filter((line) => line.id !== lineId);
-            return analyzeProject({ ...current, lines: lines.length ? lines : [{ id: `line-${Date.now()}`, source: '', tokens: [], status: 'unchecked', note: '', continuesPrevious: false, continuesNext: false }], selectedLineId: lines[0]?.id ?? '' });
+            return analyzeProject({ ...current, lines: lines.length ? lines : [{ id: `line-${Date.now()}`, source: '', tokens: [], rows: [], status: 'unchecked', note: '', continuesPrevious: false, continuesNext: false }], selectedLineId: lines[0]?.id ?? '' });
           })}
           onAddLine={() => commit('新增课文行', (current) => {
-            const line: TextbookLine = { id: `line-${Date.now()}`, source: '', tokens: [], status: 'unchecked', note: '', continuesPrevious: false, continuesNext: false };
+            const line: TextbookLine = { id: `line-${Date.now()}`, source: '', tokens: [], rows: [], status: 'unchecked', note: '', continuesPrevious: false, continuesNext: false };
             return analyzeProject({ ...current, lines: [...current.lines, line], selectedLineId: line.id });
           })}
           onSplitLongLines={() => commit('按句拆分长行', (current) => {
@@ -697,7 +765,16 @@ export default function App() {
               issues={state.issues}
               lines={state.lines}
               onJump={(lineId) => selectLine(lineId, true)}
-              onResolve={(issueId) => commit('标记问题已处理', (current) => ({ ...current, issues: current.issues.map((item) => item.id === issueId ? { ...item, resolved: true } : item) }))}
+              onResolve={(issueId) => commit('标记问题已处理', (current) => {
+                const target = current.issues.find((item) => item.id === issueId);
+                return {
+                  ...current,
+                  issues: current.issues.map((item) => item.id === issueId ? { ...item, resolved: true } : item),
+                  lines: target?.code === 'wrap-changed'
+                    ? current.lines.map((line) => line.id === target.lineId ? { ...line, reconfirm: false } : line)
+                    : current.lines,
+                };
+              })}
               onBatchFix={batchFixRule}
             />
           )}
@@ -709,7 +786,7 @@ export default function App() {
           }} />}
           {inspectorTab === 'versions' && <VersionsPanel state={state} onSnapshot={() => recordVersion()} onRestore={(version) => {
             const restored: ProjectState = cloneState({ ...version.snapshot, versions: state.versions });
-            restore(restored);
+            restore(analyzeProject(restored));
           }} />}
         </aside>
       </div>

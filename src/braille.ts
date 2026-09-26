@@ -1,4 +1,5 @@
 import type {
+  BrailleRow,
   BrailleToken,
   ProofIssue,
   ProjectState,
@@ -6,6 +7,13 @@ import type {
   TextbookLine,
   TranscriptionRule,
 } from './types';
+
+/** 盲文纸默认每行格数 */
+export const DEFAULT_CELLS_PER_LINE = 32;
+/** 折行后续行开头的续行标记（注记，不占格） */
+export const CONTINUATION_MARK = '↳';
+/** 真正的盲文点位字符（⠀-⣿），注记文字不计格 */
+const BRAILLE_PATTERN_RE = /[⠀-⣿]/gu;
 
 const LETTERS: Record<string, string> = {
   a: '⠁', b: '⠃', c: '⠉', d: '⠙', e: '⠑', f: '⠋', g: '⠛', h: '⠓', i: '⠊', j: '⠚',
@@ -142,6 +150,84 @@ export function transcribeLine(source: string, ruleSet: RuleSet, continuesPrevio
   return tokens;
 }
 
+/** 一个转写单元占用的盲文格数；缩写、字母组合、数字串等整体计格，不可拆开 */
+function tokenCells(token: BrailleToken): number {
+  return (token.braille.match(BRAILLE_PATTERN_RE) ?? []).length;
+}
+
+/**
+ * 把一行的盲文单元按每行格数折成若干段落。
+ * 缩写、字母组合和数字串各自是一个单元，绝不从中间切开；
+ * 单元本身超过行宽时单独占一行并标记 overflow。
+ */
+export function wrapLineTokens(tokens: BrailleToken[], cellsPerLine: number): BrailleRow[] {
+  const width = Math.max(1, Math.round(cellsPerLine) || DEFAULT_CELLS_PER_LINE);
+  const rows: BrailleRow[] = [];
+  let current: BrailleToken[] = [];
+  let cells = 0;
+
+  const flush = () => {
+    while (current.length > 0 && current[current.length - 1].text === ' ') current.pop();
+    if (current.length === 0) return;
+    rows.push({
+      index: rows.length + 1,
+      continued: rows.length > 0,
+      tokens: current,
+      cells,
+      overflow: false,
+    });
+    current = [];
+    cells = 0;
+  };
+
+  for (const token of tokens) {
+    if (token.text === ' ') {
+      // 分词空格：行首丢弃；放得下就留在行内，放不下就作为折行点
+      if (current.length === 0) continue;
+      if (cells < width) {
+        current.push(token);
+        cells += tokenCells(token);
+      } else {
+        flush();
+      }
+      continue;
+    }
+
+    const cost = tokenCells(token);
+    if (cost > width) {
+      // 单元本身超过行宽：单独占一行，行上另行注明
+      flush();
+      rows.push({ index: rows.length + 1, continued: rows.length > 0, tokens: [token], cells: cost, overflow: true });
+      continue;
+    }
+    if (cells + cost > width) flush();
+    current.push(token);
+    cells += cost;
+  }
+  flush();
+
+  return rows;
+}
+
+/** 一段盲文行的可打印内容（含续行标记，超宽行附注记） */
+export function rowBraille(row: BrailleRow): string {
+  const body = row.tokens.map((token) => token.braille).join('');
+  const note = row.overflow ? ` ⟦超宽单元 ${row.cells} 格，单独占一行⟧` : '';
+  return `${row.continued ? `${CONTINUATION_MARK} ` : ''}${body}${note}`;
+}
+
+/** 折行结果签名：按单元在原文行内的下标边界划分，用于判断折行是否变化 */
+function wrapSignature(rows: BrailleRow[]): string {
+  let cursor = 0;
+  return rows
+    .map((row) => {
+      const start = cursor;
+      cursor += row.tokens.length;
+      return `${start}-${cursor}${row.overflow ? '!' : ''}`;
+    })
+    .join('|');
+}
+
 function issue(
   line: TextbookLine,
   code: string,
@@ -161,16 +247,45 @@ function issue(
   };
 }
 
-function analyzeLine(line: TextbookLine, previousLine?: TextbookLine): { line: TextbookLine; issues: ProofIssue[] } {
+function analyzeLine(line: TextbookLine, cellsPerLine: number, previousLine?: TextbookLine): { line: TextbookLine; issues: ProofIssue[] } {
   const issues: ProofIssue[] = [];
-  const tokenText = line.tokens.map((token) => token.braille).join('');
   const hasContinuation = line.source.trimEnd().endsWith('-');
   const previousContinues = Boolean(previousLine?.source.trimEnd().endsWith('-'));
-  const nextLine = {
+  const rows = wrapLineTokens(line.tokens, cellsPerLine);
+  const previousSignature = (line.rows ?? []).length > 0 ? wrapSignature(line.rows) : '';
+  const wrapChanged = Boolean(previousSignature) && previousSignature !== wrapSignature(rows);
+  const nextLine: TextbookLine = {
     ...line,
+    rows,
     continuesPrevious: previousContinues,
     continuesNext: hasContinuation,
   };
+
+  if (wrapChanged && nextLine.status === 'approved') {
+    nextLine.status = 'questionable';
+    nextLine.reconfirm = true;
+    issues.push(issue(
+      nextLine,
+      'wrap-changed',
+      rows.length > 1
+        ? `折行结果已变化（现为 ${rows.length} 行），原批准已退回，请重新确认。`
+        : '折行结果已变化，原批准已退回，请重新确认。',
+      'warning',
+    ));
+  }
+
+  for (const row of rows) {
+    if (row.overflow) {
+      const token = row.tokens[0];
+      issues.push(issue(
+        nextLine,
+        'unit-overflow',
+        `单元“${token.text || token.braille}”共 ${row.cells} 格，超过每行 ${cellsPerLine} 格，已单独占一行，不可拆开。`,
+        'warning',
+        token,
+      ));
+    }
+  }
 
   if (hasContinuation) {
     issues.push(issue(nextLine, 'cross-line-hyphen', '此行以连字符结尾，已插入跨行连接标记；请核对断词位置。', 'warning', nextLine.tokens.at(-1)));
@@ -183,10 +298,6 @@ function analyzeLine(line: TextbookLine, previousLine?: TextbookLine): { line: T
     if (token.text && token.braille.includes('⟦')) {
       issues.push(issue(nextLine, 'unknown-symbol', `“${token.text}”没有可用的转写规则。`, 'error', token));
     }
-  }
-
-  if (tokenText.replace(/\s/g, '').length > 42) {
-    issues.push(issue(nextLine, 'line-too-long', `盲文结果为 ${tokenText.replace(/\s/g, '').length} 格，建议重新分词。`, 'info'));
   }
 
   if (hasContinuation && nextLine.source.trimEnd().split(/\s+/).at(-1)?.replace(/-$/, '').length === 1) {
@@ -203,20 +314,25 @@ function analyzeLine(line: TextbookLine, previousLine?: TextbookLine): { line: T
 }
 
 export function analyzeProject(state: ProjectState): ProjectState {
-  const ruleSet = state.ruleSets.find((item) => item.id === state.activeRuleSetId) ?? state.ruleSets[0];
+  const ruleSets = state.ruleSets.map((ruleSet) => ({
+    ...ruleSet,
+    cellsPerLine: Math.max(1, Math.round(ruleSet.cellsPerLine) || DEFAULT_CELLS_PER_LINE),
+  }));
+  const ruleSet = ruleSets.find((item) => item.id === state.activeRuleSetId) ?? ruleSets[0];
   const nextLines: TextbookLine[] = [];
   const issues: ProofIssue[] = [];
 
   state.lines.forEach((line, index) => {
     const previousSourceContinues = Boolean(state.lines[index - 1]?.source.trimEnd().endsWith('-'));
     const tokens = transcribeLine(line.source, ruleSet, previousSourceContinues);
-    const analyzed = analyzeLine({ ...line, tokens }, state.lines[index - 1]);
+    const analyzed = analyzeLine({ ...line, tokens }, ruleSet.cellsPerLine, state.lines[index - 1]);
     nextLines.push(analyzed.line);
     issues.push(...analyzed.issues);
   });
 
   return {
     ...state,
+    ruleSets,
     lines: nextLines,
     issues,
     lastCheckedAt: new Date().toISOString(),
@@ -244,7 +360,18 @@ export function makeRule(source: string, output: string, suspicious: boolean, ki
 }
 
 export function outputText(state: ProjectState): string {
-  return state.lines.map((line, index) => `${String(index + 1).padStart(3, '0')}  ${line.tokens.map((token) => token.braille).join('')}`).join('\n');
+  const parts: string[] = [];
+  state.lines.forEach((line, index) => {
+    const number = String(index + 1).padStart(3, '0');
+    if (line.rows.length === 0) {
+      parts.push(`${number}  （空行）`);
+      return;
+    }
+    line.rows.forEach((row, rowIndex) => {
+      parts.push(`${rowIndex === 0 ? number : '   '}  ${rowBraille(row)}`);
+    });
+  });
+  return parts.join('\n');
 }
 
 export function brailleCellCount(state: ProjectState): number {

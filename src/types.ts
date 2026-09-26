@@ -18,6 +18,8 @@ export interface RuleSet {
   description: string;
   contractions: boolean;
   hyphenMode: 'cross-line' | 'inline';
+  /** 每行盲文纸放得下的格数，默认 32 */
+  cellsPerLine: number;
   rules: TranscriptionRule[];
 }
 
@@ -31,12 +33,28 @@ export interface BrailleToken {
   offset: number;
 }
 
+export interface BrailleRow {
+  /** 本段落在盲文纸上的第几行（从 1 开始） */
+  index: number;
+  /** 是否承接上一行（第二段起为 true，预览和导出时带续行标记） */
+  continued: boolean;
+  tokens: BrailleToken[];
+  /** 实际占用的盲文格数（不含续行标记等注记） */
+  cells: number;
+  /** 单个不可拆单元超过行宽而单独占一行 */
+  overflow: boolean;
+}
+
 export interface TextbookLine {
   id: string;
   source: string;
   tokens: BrailleToken[];
+  /** 按规则集每行格数折好的盲文段落 */
+  rows: BrailleRow[];
   status: LineStatus;
   note: string;
+  /** 每行格数变化导致折行结果改变，原批准作废，需重新确认 */
+  reconfirm?: boolean;
   continuesPrevious: boolean;
   continuesNext: boolean;
 }
